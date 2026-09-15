@@ -1,3 +1,19 @@
+-- Wallet Transfer Service - initial schema
+--
+-- Design notes:
+--  * All monetary amounts are NUMERIC(19,4) to avoid floating point error.
+--  * wallets.balance is a maintained (not derived) balance, updated inside
+--    the same transaction as the ledger entries that justify the change.
+--    This keeps reads (GET balance) cheap and O(1) instead of requiring a
+--    SUM() over the ledger on every read. The ledger remains the source of
+--    truth for *how* the balance got there, and a reconciliation job could
+--    recompute balances from the ledger at any time to detect drift.
+--  * transfers.idempotency_key has a UNIQUE constraint: this is the
+--    database-level backstop for exactly-once transfer creation, even if
+--    two requests race past the application-level check.
+--  * ledger_entries has no UPDATE path at all in the application - it is
+--    append-only, which is what makes it trustworthy as a ledger.
+
 CREATE TABLE wallets (
     id          VARCHAR(64)     PRIMARY KEY,
     balance     NUMERIC(19,4)   NOT NULL DEFAULT 0,
@@ -38,6 +54,12 @@ CREATE TABLE ledger_entries (
 
 CREATE INDEX idx_ledger_entries_wallet_id   ON ledger_entries(wallet_id);
 CREATE INDEX idx_ledger_entries_transfer_id ON ledger_entries(transfer_id);
+
+-- A transfer must produce exactly two ledger entries (one DEBIT, one
+-- CREDIT) with equal amounts. That invariant is enforced in the service
+-- layer inside the same transaction that inserts both rows; it cannot be
+-- expressed as a single-row CHECK constraint in standard Postgres, so it is
+-- covered by tests (see LedgerCorrectnessTest) instead.
 
 CREATE TABLE idempotency_records (
     idempotency_key  VARCHAR(255)   PRIMARY KEY,
